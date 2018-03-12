@@ -1,10 +1,10 @@
 function polynomial_t(p::AbstractPolynomial{<:Number}, timestamp=0)
     @assert nvariables(p) == 1
-    d = maximum(degree, terms(p))
+    d = maxdegree(p)
     coeffs = zeros(d + 1)
     for term in terms(p)
         @assert nvariables(term) == 1  # should be redundant with the nvariables call above, can probably be removed
-        coeffs[degree(term) + 1] = coefficient(term) 
+        coeffs[degree(term) + 1] = coefficient(term)
     end
     polynomial_t(timestamp, length(coeffs), coeffs)
 end
@@ -45,12 +45,17 @@ function piecewise_polynomial_t(pfs::AbstractVecOrMat{<:PiecewiseFunction{<:Abst
     for k in 1:num_pieces
         mat = polynomial_matrix_t()
         mat.rows = size(pfs, 1)
-        mat.cols = size(pfs, 2)
-        mat.polynomials = [
-            [polynomial_t(pieces(pfs[i, j])[k], timestamp) for j in 1:size(pfs, 2)] 
-            for i in 1:size(pfs, 1)
-        ]
+        mat.cols = size(pfs, 2)  # returns 1 when pfs is a Vector
+        resize!(mat)
         msg.polynomial_matrices[k] = mat
+    end
+    for I in eachindex(pfs)
+        pf = pfs[I]
+        for k in 1:num_pieces
+            piece = pieces(pf)[k]
+            @show piece
+            msg.polynomial_matrices[k].polynomials[I] = polynomial_t(piece)
+        end
     end
     msg
 end
