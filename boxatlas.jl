@@ -1,8 +1,10 @@
 using MeshCat
 using MeshCatMechanisms
 using RigidBodyDynamics
+using RigidBodyDynamics: Bounds
 using LCMCore
 using BotCoreLCMTypes
+using StaticArrays
 
 function planar_base()
     world = RigidBody{Float64}("world")
@@ -44,14 +46,65 @@ end
 urdf = joinpath(@__DIR__, "box_atlas.urdf")
 urdf_mech = parse_urdf(Float64, urdf)
 robot, base_body = planar_revolute_base()
-attach!(robot, base, urdf_mech)
+attach!(robot, base_body, urdf_mech)
+state = MechanismState(robot)
 
-mvis = MechanismVisualizer(robot, URDFVisuals(urdf))
-open(mvis)
-wait(mvis)
+vis = Visualizer("tcp://127.0.0.1:6000")
+mvis = MechanismVisualizer(robot, URDFVisuals(urdf), vis)
+open(mvis.visualizer)
+wait(mvis.visualizer)
+
+# while true
+#     set_configuration!(mvis, randn(num_positions(state)))
+#     sleep(0.001)
+# end
+
+configurations = Channel{Any}(32)
 
 lcm = LCM()
 function on_robot_state(channel::String, msg::robot_state_t)
-    
+    set_configuration!(state, findjoint(robot, "base_x"), [-msg.pose.translation.y])
+    set_configuration!(state, findjoint(robot, "base_z"), [msg.pose.translation.z])
 
+    world = default_frame(root_body(robot))
+    com_position = FreeVector3D(world,
+        0,
+        msg.pose.translation.y,
+        msg.pose.translation.z
+    )
+    hip_offset = FreeVector3D(world, # TODO: not actually in world
+        0, 0.2, -0.25
+    )
+    foot_position = FreeVector3D(world,
+        0,
+        msg.joint_position[8],
+        msg.joint_position[9]
+    )
+    l_hip_to_lf = foot_position - (com_position + hip_offset)
+    set_configuration!(state, findjoint(robot, "core_to_lf_extension"), [norm(l_hip_to_lf)])
+    θ = π - atan2(l_hip_to_lf.v[2], l_hip_to_lf.v[3])
+    set_configuration!(state, findjoint(robot, "core_to_lf_rotation"), [θ])
+
+    rf_position = FreeVector3D(world, 0, msg.joint_position[11], msg.joint_position[12])
+    r_hip_position = com_position + FreeVector3D(world, 0, -0.2, -0.25) # TODO: not in world
+    r_hip_to_rf = r_hip_position - rf_position
+    set_configuration!(state, findjoint(robot, "core_to_rf_extension"), [norm(r_hip_to_rf)])
+    θ = atan2(r_hip_to_rf.v[2], r_hip_to_rf.v[3])
+    set_configuration!(state, findjoint(robot, "core_to_rf_rotation"), [θ])
+
+    # set_configuration!(mvis, configuration(state))
+    put!(configurations, copy(configuration(state)))
+end
+
+@sync begin
+    @async while true
+        q = take!(configurations)
+        set_configuration!(mvis, q)
+    end
+
+    subscribe(lcm, "BOX_ATLAS_STATE", on_robot_state, robot_state_t)
+    @async while true
+        handle(lcm)
+    end
+end
 
