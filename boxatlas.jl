@@ -1,10 +1,12 @@
 using MeshCat
 using MeshCatMechanisms
 using RigidBodyDynamics
+const rbd = RigidBodyDynamics
 using RigidBodyDynamics: Bounds
 using LCMCore
 using BotCoreLCMTypes
 using StaticArrays
+using Rotations
 
 function planar_base()
     world = RigidBody{Float64}("world")
@@ -47,64 +49,51 @@ urdf = joinpath(@__DIR__, "box_atlas.urdf")
 urdf_mech = parse_urdf(Float64, urdf)
 robot, base_body = planar_revolute_base()
 attach!(robot, base_body, urdf_mech)
+
+atlas_world_frame = CartesianFrame3D("atlas_world")
+add_frame!(root_body(robot), Transform3D(atlas_world_frame, default_frame(root_body(robot)), RotZ(π/2)))
+
 state = MechanismState(robot)
 
-vis = Visualizer("tcp://127.0.0.1:6000")
+vis = Visualizer()
 mvis = MechanismVisualizer(robot, URDFVisuals(urdf), vis)
 open(mvis.visualizer)
 wait(mvis.visualizer)
-
-# while true
-#     set_configuration!(mvis, randn(num_positions(state)))
-#     sleep(0.001)
-# end
 
 configurations = Channel{Any}(32)
 
 lcm = LCM()
 function on_robot_state(channel::String, msg::robot_state_t)
-    set_configuration!(state, findjoint(robot, "base_x"), [-msg.pose.translation.y])
-    set_configuration!(state, findjoint(robot, "base_z"), [msg.pose.translation.z])
-
+    com_position = Point3D(atlas_world_frame, msg.pose.translation.x, msg.pose.translation.y, msg.pose.translation.z)
+    
     world = default_frame(root_body(robot))
-    com_position = FreeVector3D(world,
-        0,
-        msg.pose.translation.y,
-        msg.pose.translation.z
-    )
-    hip_offset = FreeVector3D(world, # TODO: not actually in world
-        0, 0.2, -0.25
-    )
-    foot_position = FreeVector3D(world,
-        0,
-        msg.joint_position[8],
-        msg.joint_position[9]
-    )
-    l_hip_to_lf = foot_position - (com_position + hip_offset)
-    set_configuration!(state, findjoint(robot, "core_to_lf_extension"), [norm(l_hip_to_lf)])
-    θ = π - atan2(l_hip_to_lf.v[2], l_hip_to_lf.v[3])
-    set_configuration!(state, findjoint(robot, "core_to_lf_rotation"), [θ])
+    pcom = relative_transform(state, atlas_world_frame, world) * com_position
+    set_configuration!(state, findjoint(robot, "base_x"), pcom.v[1])
+    set_configuration!(state, findjoint(robot, "base_z"), pcom.v[3])
 
-    rf_position = FreeVector3D(world, 0, msg.joint_position[11], msg.joint_position[12])
-    r_hip_position = com_position + FreeVector3D(world, 0, -0.2, -0.25) # TODO: not in world
-    r_hip_to_rf = r_hip_position - rf_position
-    set_configuration!(state, findjoint(robot, "core_to_rf_extension"), [norm(r_hip_to_rf)])
-    θ = atan2(r_hip_to_rf.v[2], r_hip_to_rf.v[3])
-    set_configuration!(state, findjoint(robot, "core_to_rf_rotation"), [θ])
+    for (body, idxs, sign, θ) in (("lf", 7:9, 1, π), ("rf", 10:12, -1, π), ("lh", 1:3, 1, π/2), ("rh", 4:6, -1, π/2))
+        position = Point3D(atlas_world_frame, msg.joint_position[idxs])
+        rotation_joint = findjoint(robot, "core_to_$(body)_rotation")
+        offset = relative_transform(state, atlas_world_frame, frame_before(rotation_joint)) * position
+        set_configuration!(state, rotation_joint, θ + sign * atan2(offset.v[1], offset.v[3]))
 
-    # set_configuration!(mvis, configuration(state))
-    put!(configurations, copy(configuration(state)))
+        extension_joint = findjoint(robot, "core_to_$(body)_extension")
+        offset = relative_transform(state, atlas_world_frame, frame_before(extension_joint)) * position
+        set_configuration!(state, extension_joint, sqrt(offset.v[1]^2 + offset.v[3]^2))
+    end
+    put!(configurations, configuration(state))
 end
 
-@sync begin
-    @async while true
+@async while true
+    q = take!(configurations)
+    while isready(configurations)
         q = take!(configurations)
-        set_configuration!(mvis, q)
     end
-
-    subscribe(lcm, "BOX_ATLAS_STATE", on_robot_state, robot_state_t)
-    @async while true
-        handle(lcm)
-    end
+    set_configuration!(mvis, q)
+    sleep(1/30)
 end
 
+subscribe(lcm, "BOX_ATLAS_STATE", on_robot_state, robot_state_t)
+while true
+    handle(lcm)
+end
