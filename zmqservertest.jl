@@ -2,18 +2,12 @@ using ZMQ
 
 ctx = Context()
 sock = Socket(ctx, REP)
-ZMQ.bind(sock, "tcp://127.0.0.1:6000")
-
-function recv_multipart(sock::ZMQ.Socket)
-    frames = [ZMQ.recv(sock)]
-    while ZMQ.ismore(sock)
-        push!(frames, ZMQ.recv(sock))
-    end
-    frames
-end
+ZMQ.bind(sock, "tcp://127.0.0.1:5555")
 
 while true
-    frames = recv_multipart(sock)
-    cmd = unsafe_string(frames[1])
-    ZMQ.send(sock, "error: unrecognized command")
+    ZMQ.recv(sock)
+    while ZMQ.ismore(sock)
+        ZMQ.recv(sock)
+    end
+    ZMQ.send(sock, "ok")
 end
