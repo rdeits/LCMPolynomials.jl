@@ -79,7 +79,7 @@ function on_robot_state(channel::String, msg::robot_state_t)
 
         extension_joint = findjoint(robot, "core_to_$(body)_extension")
         offset = relative_transform(state, atlas_world_frame, frame_before(extension_joint)) * position
-        set_configuration!(state, extension_joint, sqrt(offset.v[1]^2 + offset.v[3]^2))
+        set_configuration!(state, extension_joint, offset.v' * extension_joint.joint_type.axis)
     end
     put!(configurations, configuration(state))
 end
