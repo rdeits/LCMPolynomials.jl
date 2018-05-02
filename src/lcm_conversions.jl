@@ -53,7 +53,6 @@ function piecewise_polynomial_t(pfs::AbstractVecOrMat{<:PiecewiseFunction{<:Abst
         pf = pfs[I]
         for k in 1:num_pieces
             piece = pieces(pf)[k]
-            @show piece
             msg.polynomial_matrices[k].polynomials[I] = polynomial_t(piece)
         end
     end
